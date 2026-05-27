@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="
+  script-src 'self' 'unsafe-inline';
+  require-trusted-types-for 'script';
+  trusted-types s1-policy default s1-pass;
+">
+<title>Service1 UI</title>
+<style>body{font:14px Inter,system-ui,sans-serif;background:#0A2540;color:#fff;display:grid;place-items:center;height:100vh;margin:0}
+.splash{text-align:center}.bar{width:200px;height:3px;background:#1e3a5f;border-radius:2px;overflow:hidden;margin:14px auto}
+.bar > div{height:100%;background:#D4960A;animation:p 1.4s linear infinite} @keyframes p{from{width:0}to{width:100%}}
+.err{max-width:520px;text-align:center}.err h1{font-size:18px;margin:0 0 8px}.err p{font-size:13px;opacity:.8;line-height:1.5}</style>
+</head>
+<body>
+  <div id="splash" class="splash">
+    <div style="font-weight:600;font-size:16px">Loading Service1 UI…</div>
+    <div class="bar"><div></div></div>
+    <div id="msg" style="font-size:11px;opacity:.6">Checking browser support…</div>
+  </div>
+  <div id="unsupported" class="err" hidden>
+    <h1>Your browser is not supported</h1>
+    <p>Service1 UI uses the Trusted Types web platform feature to prevent XSS attacks.
+       Your browser does not support Trusted Types, so we cannot safely load the app.</p>
+    <p>Please use a recent version of <b>Chrome</b>, <b>Edge</b>, or another Chromium-based browser.</p>
+  </div>
+<script>
+(async function () {
+  var msg = document.getElementById('msg');
+  function unsupported() {
+    document.getElementById('splash').hidden = true;
+    document.getElementById('unsupported').hidden = false;
+  }
+  if (typeof window.trustedTypes !== 'object'
+      || typeof trustedTypes.createPolicy !== 'function'
+      || typeof window.TrustedHTML !== 'function') {
+    return unsupported();
+  }
+  function mustThrow(fn) {
+    try { fn(); return false; } catch (e) { return e instanceof TypeError; }
+  }
+  var inert = new DOMParser().parseFromString('<!doctype html><html><body></body></html>', 'text/html');
+  var enforced =
+    mustThrow(function () { document.createElement('div').innerHTML = '<b>x</b>'; }) &&
+    mustThrow(function () { document.createElement('div').outerHTML = '<b>x</b>'; }) &&
+    mustThrow(function () { document.createElement('div').insertAdjacentHTML('beforeend','<b>x</b>'); }) &&
+    mustThrow(function () { document.createElement('iframe').srcdoc = '<b>x</b>'; }) &&
+    mustThrow(function () { inert.body.innerHTML = '<b>x</b>'; }) &&
+    mustThrow(function () { inert.createElement('iframe').srcdoc = '<b>x</b>'; }) &&
+    mustThrow(function () { inert.createElement('div').insertAdjacentHTML('beforeend','<b>x</b>'); });
+  if (!enforced) return unsupported();
+  if (!('serviceWorker' in navigator)) return unsupported();
+  try {
+    var reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    if (!navigator.serviceWorker.controller) {
+      await new Promise(function (res) {
+        navigator.serviceWorker.addEventListener('controllerchange', res, { once: true });
+        if (reg.active) reg.active.postMessage({ type: 'CLAIM', supported: true });
+      });
+    } else {
+      navigator.serviceWorker.controller.postMessage({ type: 'TT_PROBE', supported: true });
+    }
+    msg.textContent = 'Loading…';
+    location.replace(location.pathname + location.search + location.hash);
+  } catch (e) {
+    msg.textContent = 'Failed to install security layer: ' + (e && e.message || e);
+  }
+})();
+</script>
+</body></html>
