@@ -5,7 +5,7 @@
 <meta http-equiv="Content-Security-Policy" content="
   script-src 'self' 'unsafe-inline';
   require-trusted-types-for 'script';
-  trusted-types s1-policy default s1-pass;
+  trusted-types s1-policy default s1-pass s1-splash;
 ">
 <title>Service1 UI</title>
 <style>body{font:14px Inter,system-ui,sans-serif;background:#0A2540;color:#fff;display:grid;place-items:center;height:100vh;margin:0}
@@ -54,8 +54,17 @@
     mustThrow(function () { inert.createElement('div').insertAdjacentHTML('beforeend','<b>x</b>'); });
   if (!enforced) return unsupported();
   if (!('serviceWorker' in navigator)) return unsupported();
+  // With require-trusted-types-for 'script' active, the SW URL must be wrapped
+  // in a TrustedScriptURL. Register a one-call policy that hard-codes the
+  // shell-relative /sw.js path so callers can't sneak a different URL through.
+  var swPolicy = trustedTypes.createPolicy('s1-splash', {
+    createScriptURL: function (u) {
+      if (u !== '/sw.js') throw new TypeError('s1-splash: only /sw.js is permitted');
+      return u;
+    }
+  });
   try {
-    var reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+    var reg = await navigator.serviceWorker.register(swPolicy.createScriptURL('/sw.js'), { scope: '/' });
     if (!navigator.serviceWorker.controller) {
       await new Promise(function (res) {
         navigator.serviceWorker.addEventListener('controllerchange', res, { once: true });
