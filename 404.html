@@ -40,7 +40,10 @@
   function mustThrow(fn) {
     try { fn(); return false; } catch (e) { return e instanceof TypeError; }
   }
-  var inert = new DOMParser().parseFromString('<!doctype html><html><body></body></html>', 'text/html');
+  // Inert document for off-tree probes. Use createHTMLDocument because
+  // DOMParser.parseFromString is itself TT-enforced in modern Chromium and
+  // would throw before we get to the probes below.
+  var inert = document.implementation.createHTMLDocument('');
   var enforced =
     mustThrow(function () { document.createElement('div').innerHTML = '<b>x</b>'; }) &&
     mustThrow(function () { document.createElement('div').outerHTML = '<b>x</b>'; }) &&

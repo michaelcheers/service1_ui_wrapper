@@ -8,7 +8,9 @@
     function mustThrow(fn) {
       try { fn(); return false; } catch (e) { return e instanceof TypeError; }
     }
-    var inert = new DOMParser().parseFromString('<!doctype html><html><body></body></html>', 'text/html');
+    // createHTMLDocument: DOMParser.parseFromString is itself TT-enforced in
+    // modern Chromium and would throw before we can probe.
+    var inert = document.implementation.createHTMLDocument('');
     return mustThrow(function () { document.createElement('div').innerHTML = '<b>x</b>'; })
         && mustThrow(function () { document.createElement('div').outerHTML = '<b>x</b>'; })
         && mustThrow(function () { document.createElement('div').insertAdjacentHTML('beforeend','<b>x</b>'); })
@@ -36,7 +38,7 @@
     throw new Error('s1-bootstrap: Trusted Types not supported, aborting page load');
   }
 
-  var INERT = new DOMParser().parseFromString('<!doctype html><html></html>', 'text/html');
+  var INERT = document.implementation.createHTMLDocument('');
 
   var passPolicy = trustedTypes.createPolicy('s1-pass', {
     createHTML:      function (s) { return s; },
