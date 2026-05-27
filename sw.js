@@ -78,7 +78,7 @@ self.addEventListener('message', (event) => {
 });
 
 function cspHeader() {
-  return "script-src 'self' 'unsafe-inline' https://ui-raw.service1.app https://maps.googleapis.com; "
+  return "script-src 'self' 'unsafe-inline' https://maps.googleapis.com; "
        + "require-trusted-types-for 'script'; "
        + "trusted-types s1-policy default s1-pass;";
 }
