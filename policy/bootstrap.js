@@ -1,25 +1,93 @@
-// /policy/bootstrap.js — Trusted Types bootstrap injected by the SW
-// into every proxied HTML response. Loaded synchronously before module scripts.
+// /policy/bootstrap.js — Trusted Types bootstrap injected by the SW.
+//
+// Runs in one of two modes:
+//   GATE MODE  (window.__S1_GATE__ set by the SW's gate page): verify the browser
+//              — synchronous sink probe + async javascript:-URL canary — then tell
+//              the SW it passed and reload into the real proxied app. Creates NO
+//              app policies; the gate page never renders untrusted content.
+//   APP MODE   (real proxied page): the engine was already verified by the gate, so
+//              just (re-)run the cheap sync probe as defence-in-depth and install
+//              the Trusted Types policies the app runs under.
+//
+// Why a gate page instead of an in-page async check: javascript:-URL execution can
+// only be observed asynchronously (it happens at navigation time). Running that
+// check on a dedicated gate page — and not serving the real app until it passes —
+// makes the async check a genuine pre-execution gate rather than an after-the-fact
+// detector. The app HTML never reaches a browser whose engine hasn't been proven.
 (function () {
+  // ---- shared: probe helpers ----------------------------------------------
+  function ttThrows(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } }
+  function anyThrows(fn) { try { fn(); return false; } catch (e) { return true; } }
+
   function ttEnforced() {
     if (typeof window.trustedTypes !== 'object'
         || typeof trustedTypes.createPolicy !== 'function'
-        || typeof window.TrustedHTML !== 'function') return false;
-    function mustThrow(fn) {
-      try { fn(); return false; } catch (e) { return e instanceof TypeError; }
-    }
-    // createHTMLDocument: DOMParser.parseFromString is itself TT-enforced in
-    // modern Chromium and would throw before we can probe.
+        || typeof window.TrustedHTML !== 'function'
+        || typeof window.TrustedScript !== 'function'
+        || typeof window.TrustedScriptURL !== 'function') return false;
+
     var inert = document.implementation.createHTMLDocument('');
-    return mustThrow(function () { document.createElement('div').innerHTML = '<b>x</b>'; })
-        && mustThrow(function () { document.createElement('div').outerHTML = '<b>x</b>'; })
-        && mustThrow(function () { document.createElement('div').insertAdjacentHTML('beforeend','<b>x</b>'); })
-        && mustThrow(function () { document.createElement('iframe').srcdoc = '<b>x</b>'; })
-        && mustThrow(function () { inert.body.innerHTML = '<b>x</b>'; })
-        && mustThrow(function () { inert.createElement('iframe').srcdoc = '<b>x</b>'; })
-        && mustThrow(function () { inert.createElement('div').insertAdjacentHTML('beforeend','<b>x</b>'); });
+    var div   = inert.createElement('div');
+    var ifr   = inert.createElement('iframe');
+    var img   = inert.createElement('img');
+    var scr   = inert.createElement('script');
+
+    // TrustedHTML sinks
+    var htmlOk =
+        ttThrows(function () { div.innerHTML = '<b>x</b>'; })
+     && ttThrows(function () { div.outerHTML = '<b>x</b>'; })
+     && ttThrows(function () { div.insertAdjacentHTML('beforeend', '<b>x</b>'); })
+     && ttThrows(function () { ifr.srcdoc = '<b>x</b>'; })
+     && ttThrows(function () { ifr.setAttribute('srcdoc', '<b>x</b>'); })
+     && ttThrows(function () { inert.body.innerHTML = '<b>x</b>'; })
+     && ttThrows(function () { new DOMParser().parseFromString('<b>x</b>', 'text/html'); })
+     && ttThrows(function () { document.createRange().createContextualFragment('<b>x</b>'); });
+    if (typeof div.setHTMLUnsafe === 'function')
+      htmlOk = htmlOk && ttThrows(function () { div.setHTMLUnsafe('<b>x</b>'); });
+
+    // TrustedScript sinks — event-handler content attributes via setAttribute, script text
+    var scriptOk =
+        ttThrows(function () { div.setAttribute('onclick', 'void 0'); })
+     && ttThrows(function () { img.setAttribute('onerror', 'void 0'); })
+     && ttThrows(function () { div.setAttribute('onmouseover', 'void 0'); })
+     && ttThrows(function () { scr.text = 'void 0'; })
+     && ttThrows(function () { scr.textContent = 'void 0'; });
+
+    // eval / Function / string timers — must not be executable (any throw accepted,
+    // since a no-'unsafe-eval' CSP may reject them before TT is consulted)
+    var evalOk =
+        anyThrows(function () { window.eval('void 0'); })
+     && anyThrows(function () { return new Function('return 0'); })
+     && anyThrows(function () { var id = setTimeout('void 0', 0); if (id) { clearTimeout(id); throw 0; } });
+
+    // TrustedScriptURL sinks
+    var urlOk =
+        ttThrows(function () { scr.src = 'probe.js'; })
+     && ttThrows(function () { scr.setAttribute('src', 'probe.js'); });
+    try {
+      var svgScr = inert.createElementNS('http://www.w3.org/2000/svg', 'script');
+      urlOk = urlOk && ttThrows(function () { svgScr.setAttribute('href', 'probe.js'); });
+    } catch (e) {}
+
+    // sink-map introspection (supplementary)
+    var mapOk = true;
+    if (typeof trustedTypes.getPropertyType === 'function') {
+      mapOk = mapOk
+        && trustedTypes.getPropertyType('div', 'innerHTML') === 'TrustedHTML'
+        && trustedTypes.getPropertyType('script', 'text')   === 'TrustedScript'
+        && trustedTypes.getPropertyType('script', 'src')     === 'TrustedScriptURL';
+    }
+    if (typeof trustedTypes.getAttributeType === 'function') {
+      mapOk = mapOk
+        && trustedTypes.getAttributeType('div', 'onclick')   === 'TrustedScript'
+        && trustedTypes.getAttributeType('iframe', 'srcdoc')  === 'TrustedHTML'
+        && trustedTypes.getAttributeType('script', 'src')     === 'TrustedScriptURL';
+    }
+
+    return htmlOk && scriptOk && evalOk && urlOk && mapOk;
   }
-  if (!ttEnforced()) {
+
+  function renderUnsupported(detail) {
     while (document.documentElement.firstChild) document.documentElement.removeChild(document.documentElement.firstChild);
     document.title = 'Browser not supported';
     document.documentElement.appendChild(document.createElement('head'));
@@ -27,15 +95,77 @@
     body.style.font = '14px Inter,system-ui'; body.style.padding = '40px'; body.style.maxWidth = '560px';
     var h1 = document.createElement('h1'); h1.textContent = 'Your browser is not supported';
     var p = document.createElement('p');
-    p.textContent = 'Service1 UI requires the Trusted Types feature to prevent XSS. '
-                  + 'Please use a recent Chromium-based browser (Chrome, Edge, Brave, Opera).';
+    p.textContent = 'Service1 UI requires full Trusted Types enforcement to prevent XSS. '
+                  + 'Please use a recent Chromium-based browser (Chrome, Edge, Brave, Opera), '
+                  + 'Safari 26+, or Firefox with Trusted Types enabled.';
     body.appendChild(h1); body.appendChild(p);
     try {
-      if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-        navigator.serviceWorker.controller.postMessage({ type: 'TT_PROBE', supported: false });
-      }
+      if (navigator.serviceWorker && navigator.serviceWorker.controller)
+        navigator.serviceWorker.controller.postMessage({ type: 'TT_PROBE', supported: false, detail: detail || '' });
     } catch (e) {}
-    throw new Error('s1-bootstrap: Trusted Types not supported, aborting page load');
+  }
+
+  // Async canary: does the engine route a javascript: URL navigation through
+  // Trusted Types? Sandboxed (no parent reach) but allow-scripts so the URL gets a
+  // genuine chance to fire; same-origin so we can read the flag. With no default
+  // policy in the child realm, a conformant engine blocks the navigation and the
+  // flag stays unset. Resolves leaked=true if it executed. Generous wait — this is
+  // the only thing happening on the gate page.
+  function jsUrlGate() {
+    return new Promise(function (resolve) {
+      var f, settled = false;
+      function finish() {
+        if (settled) return; settled = true;
+        var leaked = false;
+        try {
+          var cd = f && f.contentDocument;
+          leaked = !!(cd && cd.documentElement && cd.documentElement.getAttribute('data-leak') === '1');
+        } catch (e) {}
+        try { f && f.remove(); } catch (e) {}
+        resolve(leaked);
+      }
+      try {
+        f = document.createElement('iframe');
+        f.style.display = 'none';
+        f.setAttribute('sandbox', 'allow-scripts allow-same-origin');
+        f.addEventListener('load', function () { setTimeout(finish, 0); }, { once: true });
+        f.src = 'javascript:try{document.documentElement.setAttribute("data-leak","1")}catch(e){}';
+        (document.body || document.documentElement).appendChild(f);
+      } catch (e) { resolve(false); return; }
+      setTimeout(finish, 400); // reasonable max wait for the flag
+    });
+  }
+
+  function markVerifiedThenReload() {
+    function reload() { try { location.reload(); } catch (e) {} }
+    try {
+      if (!(navigator.serviceWorker && navigator.serviceWorker.ready)) { reload(); return; }
+      navigator.serviceWorker.ready.then(function (reg) {
+        var target = navigator.serviceWorker.controller || (reg && reg.active);
+        if (!target) { reload(); return; }
+        var ch = new MessageChannel(), done = false;
+        ch.port1.onmessage = function () { if (done) return; done = true; reload(); };
+        target.postMessage({ type: 'TT_VERIFIED' }, [ch.port2]);
+        setTimeout(function () { if (done) return; done = true; reload(); }, 1500); // ack fallback
+      }, reload);
+    } catch (e) { reload(); }
+  }
+
+  // ---- GATE MODE ----------------------------------------------------------
+  if (window.__S1_GATE__) {
+    if (!ttEnforced()) { renderUnsupported('synchronous Trusted Types sink probe failed'); return; }
+    jsUrlGate().then(function (leaked) {
+      if (leaked) { renderUnsupported('javascript: URL executed under enforcement'); return; }
+      markVerifiedThenReload();
+    });
+    return;
+  }
+
+  // ---- APP MODE -----------------------------------------------------------
+  // Engine already verified by the gate; sync probe kept as cheap defence-in-depth.
+  if (!ttEnforced()) {
+    renderUnsupported('synchronous Trusted Types sink probe failed');
+    throw new Error('s1-bootstrap: Trusted Types not fully enforced, aborting page load');
   }
 
   var INERT = document.implementation.createHTMLDocument('');
@@ -61,10 +191,7 @@
     try {
       var doc = ifr.contentDocument;
       if (!doc || !doc.documentElement) return;
-      var h = Math.max(
-        doc.documentElement.scrollHeight,
-        doc.body ? doc.body.scrollHeight : 0
-      );
+      var h = Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0);
       ifr.style.height = (h || 0) + 'px';
     } catch (e) {}
   }
