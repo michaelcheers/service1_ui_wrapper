@@ -9,6 +9,39 @@ const SHELL_FILES = new Set(['/sw.js', '/404.html', '/policy/bootstrap.js', '/un
 
 const UNSUPPORTED_CLIENTS = new Map();
 
+// Browser-capability verification. The gate page proves the engine enforces
+// Trusted Types (incl. javascript: URLs) and posts TT_VERIFIED; we record it and
+// from then on serve the real proxied app. Persisted in the versioned cache so a
+// new SW VERSION transparently forces re-verification.
+let TT_VERIFIED_MEM = false;
+const VERIFIED_KEY = '/__s1_tt_verified__';
+
+async function isVerified() {
+  if (TT_VERIFIED_MEM) return true;
+  try {
+    const c = await caches.open(CACHE_NAME);
+    if (await c.match(VERIFIED_KEY)) { TT_VERIFIED_MEM = true; return true; }
+  } catch (_) {}
+  return false;
+}
+async function setVerified() {
+  TT_VERIFIED_MEM = true;
+  try { const c = await caches.open(CACHE_NAME); await c.put(VERIFIED_KEY, new Response('1')); } catch (_) {}
+}
+
+function gateHtml() {
+  return '<!doctype html><html><head><meta charset="utf-8">'
+       + '<meta name="viewport" content="width=device-width,initial-scale=1">'
+       + '<title>Checking browser\u2026</title>'
+       + '<script>window.__S1_GATE__=1;<\/script>'
+       + '<script src="/policy/bootstrap.js"><\/script>'
+       + '<style>body{font:14px Inter,system-ui;padding:40px;max-width:560px;color:#333}</style>'
+       + '</head><body><p>Checking browser security\u2026</p></body></html>';
+}
+async function serveGate() {
+  return new Response(gateHtml(), { status: 200, headers: hardenedHeaders(new Headers(), 'text/html; charset=utf-8') });
+}
+
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
@@ -37,6 +70,10 @@ self.addEventListener('message', (event) => {
   if (data.type === 'TT_PROBE' && cid) {
     if (data.supported === false) UNSUPPORTED_CLIENTS.set(cid, true);
     else UNSUPPORTED_CLIENTS.delete(cid);
+  }
+  if (data.type === 'TT_VERIFIED') {
+    const port = event.ports && event.ports[0];
+    event.waitUntil(setVerified().then(() => { if (port) { try { port.postMessage({ ok: true }); } catch (_) {} } }));
   }
 });
 
@@ -103,7 +140,22 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  event.respondWith((async () => {
+  // Until the browser has passed the gate, every top-level navigation gets the
+  // gate page instead of the real app. The real proxied app is never served to an
+  // unverified engine.
+  if (req.mode === 'navigate') {
+    event.respondWith((async () => {
+      if (await isVerified()) return proxyApp(url, path);
+      return serveGate();
+    })());
+    return;
+  }
+
+  event.respondWith(proxyApp(url, path));
+});
+
+async function proxyApp(url, path) {
+  {
     const rawUrl = RAW_ORIGIN + path + url.search;
     let resp;
     try {
@@ -135,5 +187,5 @@ self.addEventListener('fetch', (event) => {
       } catch (_) {}
       return out;
     }
-  })());
-});
+  }
+}
